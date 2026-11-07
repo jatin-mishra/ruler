@@ -1,0 +1,41 @@
+subprojects {
+    apply plugin: 'java-library'
+
+    group = 'io.ruler'
+    version = '1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    // Versions aligned with Spring Boot 4.0.9's dependency management.
+    ext {
+        jacksonVersion = '3.1.7'
+        lombokVersion = '1.18.48'
+        slf4jVersion = '2.0.20'
+        hibernateValidatorVersion = '9.0.2.Final'
+        assertjVersion = '3.27.7'
+    }
+
+    dependencies {
+        // Lombok is compile-time only: library users get no runtime dependency.
+        compileOnly "org.projectlombok:lombok:${lombokVersion}"
+        annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+        testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+        testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.compilerArgs += ['-parameters', '-Xlint:unchecked']
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+}

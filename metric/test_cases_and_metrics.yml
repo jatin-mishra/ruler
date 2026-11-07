@@ -1,0 +1,434 @@
+# Success / failure metrics and test cases for Ruler v1 (design: docs/lld.md)
+
+metrics:
+  success:
+    - "./gradlew build passes: every test below is green in ruler-core and ruler-spring-boot-starter"
+    - "ruler-core has no Spring dependency (only Jackson)"
+    - "Every invalid definition is rejected with a ValidationError {path, code, message}; nothing invalid is ever stored"
+    - "Lifecycle invariants hold under concurrency: <=1 DRAFT and <=1 ACTIVE per key"
+    - "A hook failure never fails or rolls back the operation that triggered it"
+    - "Every REST operation is also callable as a public service method (controllers only delegate)"
+  failure:
+    - "Any test fails, or a mismatch between validation and evaluation (one accepts what the other rejects)"
+    - "Silent wrong results: a missing attribute yields a value instead of an EvaluationException"
+
+test_cases:
+  types:
+    - id: T1   # widening is allowed one way only
+      scenario: "integer→long→double and integer/long→big_decimal assignable; double↔big_decimal not assignable"
+    - id: T2   # strict runtime coercion for attributes
+      scenario: "attribute value '12' (String) for an integer attribute is rejected; 12 (Integer) is accepted"
+    - id: T3   # constants are authored text, so they are parsed leniently
+      scenario: "constant {data_type: big_decimal, value: '0.001'} parses to BigDecimal 0.001"
+    - id: T4   # ambiguity guard
+      scenario: "decimal constant without data_type → CONSTANT_TYPE_REQUIRED"
+
+  path_resolver:
+    - id: P1
+      scenario: "name.first on a nested Map, a record, and a POJO getter"
+    - id: P2
+      scenario: "nameList.0.first returns the first element's field; index out of range → MISSING"
+    - id: P3
+      scenario: "nameList.*.first returns a list of every element's field"
+    - id: P4   # Q13
+      scenario: "a.*.b.*.c rejected at config load with a clear error"
+    - id: P5
+      scenario: "missing key → MISSING (distinct from an explicit null value)"
+
+  config:
+    - id: C1
+      scenario: "YAML source reads only the subtree under prefix 'ruler' of a host application.yml"
+    - id: C2
+      scenario: "properties source unflattens ruler.decision-trees[0].attributes[1].name"
+    - id: C3
+      scenario: "composite source merges two files; the same case in both → ConfigurationException"
+    - id: C4
+      scenario: "startup fails: duplicate attribute code, static without path, dynamic without a registered executor, unknown data_type, min > max"
+    - id: C5   # spec compatibility
+      scenario: "isDynamic, is_dynamic and is-dynamic are all accepted"
+
+  operators:
+    - id: O1
+      scenario: "every operator in the spec §7 table evaluates correctly, including equals_ignore_case, prefix/suffix match, in, contains_any, contains_all"
+    - id: O2
+      scenario: "integer lhs GT double rhs works through promotion"
+    - id: O3
+      scenario: "big_decimal divide uses the configured scale and rounding; division by zero → EvaluationException"
+    - id: O4
+      scenario: "string arithmetic: append_prefix/suffix, remove_prefix/suffix_length, lower/upper_case (unary)"
+    - id: O5
+      scenario: "list/string union, intersection, remove_all_if_exists, add_all"
+    - id: O6
+      scenario: "getOperators(primitive, string) lists exactly the registered condition and arithmetic ops"
+
+  validation:
+    - id: V1   # Q7 condition
+      scenario: "operator not valid for the lhs type (GT on string) → OPERATOR_NOT_SUPPORTED"
+    - id: V2   # Q7 condition rhs
+      scenario: "rhs type incompatible (string GT integer, 'in' with a primitive rhs) → OPERATOR_NOT_SUPPORTED"
+    - id: V3   # Q5b
+      scenario: "attribute path not declared in config → UNKNOWN_ATTRIBUTE"
+    - id: V4   # Q7 expression bottom-up
+      scenario: "nested expression ADD(attr, MULTIPLY(0.001, dyn)) types bottom-up; a string inside a numeric op is rejected at the inner node path"
+    - id: V5
+      scenario: "leaf type does not match the case return type → RETURN_TYPE_MISMATCH"
+    - id: V6
+      scenario: "list return: every item is checked; map return: every key and value is checked"
+    - id: V7   # Q6 params
+      scenario: "dynamic attribute params: missing required, unknown name, value out of min/max, not in allowed_values, pattern mismatch"
+    - id: V8   # Q5d
+      scenario: "EXPRESSION_REFERENCE to a missing or non-ACTIVE version → rejected; to another case → rejected"
+    - id: V9   # Q17
+      scenario: "expression operand in a condition → OPERAND_KIND_NOT_ALLOWED"
+    - id: V10  # collect-all
+      scenario: "a definition with 3 independent errors reports all 3 in one response"
+
+  return_type:   # Q20: chosen per tree in the UI
+    - id: R1
+      scenario: "tree JSON without 'returns' → REQUIRED at $.returns; unknown data_type → INVALID_TYPE"
+    - id: R2
+      scenario: "two trees in the same case with different return types (big_decimal and list/string) both validate and evaluate"
+    - id: R3
+      scenario: "leaf type checked against the tree's own returns (RETURN_TYPE_MISMATCH), not a case-level type"
+    - id: R4
+      scenario: "scale/rounding only allowed with big_decimal; result rounded to the tree's scale"
+    - id: R5   # lock
+      scenario: "update that changes returns → RETURN_TYPE_LOCKED; same returns → accepted"
+    - id: R6
+      scenario: "a case config that still has 'returns' is rejected at startup with a clear message"
+    - id: R7
+      scenario: "catalog getTypes lists containers and every registered data type (incl. host types)"
+
+  lifecycle:
+    - id: L1
+      scenario: "put creates v1 DRAFT and fires PostCreationHook; put on an existing key → Conflict"
+    - id: L2   # single draft
+      scenario: "patch while a DRAFT exists → Conflict; after reject a new draft is allowed"
+    - id: L3   # Q10, Q14
+      scenario: "patch replaces the whole data, creates latest+1 as DRAFT and fires PostPatchHook; ACTIVE keeps serving"
+    - id: L4   # atomic approve
+      scenario: "approve v2 → v2 ACTIVE and v1 INACTIVE together; 2 transitions recorded"
+    - id: L5   # Q5
+      scenario: "approve with a sample input missing a path or with a wrong type → 400 with the errors; the version stays DRAFT"
+    - id: L6   # Q5c
+      scenario: "reject without remarks → ValidationException; with remarks → INACTIVE and the remarks stored on the transition"
+    - id: L7
+      scenario: "markInactive → INACTIVE, fires InactiveMarkingHook; evaluate then → NotFound"
+    - id: L8   # Q11
+      scenario: "reactivate v1 → new v3 DRAFT with v1's data; v1 unchanged; PostPatchHook fired"
+    - id: L9
+      scenario: "illegal transitions: approve an ACTIVE version, reactivate a DRAFT → IllegalTransitionException"
+    - id: L10  # Q18
+      scenario: "a hook that throws does not fail put/patch/markInactive"
+    - id: L11  # Q4
+      scenario: "expressions follow the same lifecycle (put, patch, approve, reject, reactivate)"
+    - id: L12  # concurrency
+      scenario: "10 threads patch the same key at once → exactly 1 succeeds, 9 get Conflict"
+
+  evaluation:
+    - id: E1   # end-to-end
+      scenario: "stamp-duty: config → expression approve → tree approve → evaluate returns BigDecimal at scale 2"
+    - id: E2
+      scenario: "every branch is reachable: success and failure paths give the expected leaves"
+    - id: E3   # Q8
+      scenario: "missing attribute in the input → EvaluationException with the node path"
+    - id: E4
+      scenario: "a dynamic attribute used twice in one evaluation is executed once (memo)"
+    - id: E5   # pinned reference
+      scenario: "after expression v2 is approved, a tree referencing v1 still evaluates with v1"
+    - id: E6
+      scenario: "list and map return types produce a List / Map of the declared Java types"
+    - id: E7
+      scenario: "an integer leaf in a double case is returned as a Double"
+
+  spring:
+    - id: S1
+      scenario: "the auto-configured Ruler bean reads ruler.* from application.yml and registers DynamicAttribute and hook beans"
+    - id: S2
+      scenario: "REST flow: POST expression → approve → POST tree → approve → evaluate → PUT → history"
+    - id: S3
+      scenario: "error mapping: validation 400 with an errors list, not found 404, conflict 409, evaluation 422"
+    - id: S4
+      scenario: "catalog endpoints: attributes, attribute params, expressions, operators"
+    - id: S5
+      scenario: "a mutating call without the X-Ruler-Actor header → 400"
+    - id: S6   # item 14
+      scenario: "host hook beans and @EventListener receive LifecycleEvents asynchronously; a failing hook does not fail the request"
+    - id: S7   # item 8
+      scenario: "errors are RFC 9457 ProblemDetail (application/problem+json) with code and errors properties"
+    - id: S8   # item 15
+      scenario: "with springdoc on the classpath, /v3/api-docs lists the Ruler endpoints"
+    - id: S9   # item 1 + Q20
+      scenario: "Spring config with an unknown key (e.g. decision-trees[0].returns) fails startup"
+
+  ui_support_apis:   # §16, pending review (2026-11-07)
+    # A. list cases
+    - id: U1
+      scenario: "getCases() returns every configured case sorted by name with its attribute count; GET /catalog/cases → [{name, attribute_count}]"
+    # B. list trees / expressions
+    - id: U2
+      scenario: "InMemory keys(case): several cases and several versions per key → distinct keys of that case only, sorted; unknown case → []"
+    - id: U3
+      scenario: "list(case) on a configured case with no rules → []"
+    - id: U4
+      scenario: "tree with ACTIVE v1 + DRAFT v2 → latest_version=2, latest_status=DRAFT, active_version=1, draft_version=2, description/updated_by/updated_at from v2"
+    - id: U5
+      scenario: "only DRAFT v1 → active_version=null; only INACTIVE versions → active_version=null and draft_version=null"
+    - id: U6
+      scenario: "return_type: trees → the tree's returns; expressions → the stored result type"
+    - id: U7
+      scenario: "unknown case → NotFoundException in core, 404 ProblemDetail over REST; missing ?case= → 400"
+    - id: U8   # additive
+      scenario: "GET /decision-trees/{case}/{name} and /expressions/{case}/{name} behave exactly as before"
+    # C. attribute type filter
+    - id: U9
+      scenario: "no filter → identical output to getAttributes(case) today"
+    - id: U10
+      scenario: "data_type=double filter → integer, long and double attributes appear (widening); string and big_decimal do not"
+    - id: U11
+      scenario: "container_type=list filter → only list attributes; unknown data_type → 400; unknown case → 404"
+    # D1. whole-tree dry run (same checks as save, nothing stored)
+    - id: U12
+      scenario: "valid tree → valid=true, errors=[]; nothing stored (history → NotFound) and no hook fired"
+    - id: U13
+      scenario: "tree with a missing branch → REQUIRED at $.root.success_condition (same code and path as save)"
+    - id: U14
+      scenario: "malformed definition / unknown operand type → valid=false with one error at its path; unknown case → UNKNOWN_CASE at $.case; no exception"
+    - id: U15
+      scenario: "reference to a DRAFT expression → EXPRESSION_NOT_ACTIVE (same rule as create); expressions/validate behaves the same for expressions"
+    # D2. validateNode: one card at a time; existing validation unchanged
+    - id: U16
+      scenario: "condition card without branches → valid=true"
+    - id: U17
+      scenario: "condition card with GT on a string lhs → OPERATOR_NOT_SUPPORTED at <path>.operator; unknown attribute → UNKNOWN_ATTRIBUTE at <path>.lhs"
+    - id: U18
+      scenario: "value card checked against the given returns: mismatch → RETURN_TYPE_MISMATCH; no returns → REQUIRED at $.returns"
+    - id: U19
+      scenario: "expression card → valid with result_type; type error reported at the inner node path"
+    - id: U20
+      scenario: "path prefix: errors start with the given path (default $), matching save-time paths"
+    - id: U21
+      scenario: "REST: /validate and /validate-node → 200 {valid, errors}; broken JSON or missing data/case/node → 400; never routed to /{case}/{name}"
+    - id: U22
+      scenario: "Swagger examples and requests.http entries for the 4 APIs execute successfully against ruler-example"
+
+  decision_tree_ui:   # ruler-example/ui (2026-11-07)
+    # model (vitest)
+    - id: UI1
+      scenario: "fromJson → toJson round-trips the seeded stamp-duty:default tree exactly (expression operands preserved untouched)"
+    - id: UI2
+      scenario: "node paths: root = $.root; children = <p>.success_condition (TRUE, right) / <p>.failure_condition (FALSE, left)"
+    - id: UI3
+      scenario: "error mapping: $.root.success_condition.lhs → that card's lhs field; an error matching no node → tree-level banner"
+    - id: UI4
+      scenario: "constants serialise with container_type + data_type; numbers as strings (exact decimals), booleans as booleans, list constant as array"
+    - id: UI5
+      scenario: "dynamic attribute: value = code, params[] only for filled params (optional empty param omitted so its default applies); static attribute: value = path"
+    - id: UI6
+      scenario: "completeness: a card is validated only when lhs, operator and rhs (or all value rows) are filled; an incomplete tree blocks save with a clear message"
+    - id: UI7
+      scenario: "changing the return type of a new tree resets value nodes to the new shape (single / list / map)"
+    # flows (browser, against :9090)
+    - id: UI8
+      scenario: "list page shows stamp-duty:default with ACTIVE badge and its return type; expressions tab lists 4 ACTIVE expressions"
+    - id: UI9
+      scenario: "create: condition root → + Value both sides → save → new row shows DRAFT v1"
+    - id: UI10
+      scenario: "string attribute lhs offers only string operators (no GT); choosing 'in' turns the rhs constant into a list editor"
+    - id: UI11
+      scenario: "dynamic attribute (stamp duty rate) shows its params inline: state as MH/KA dropdown (required), area_type with default URBAN"
+    - id: UI12
+      scenario: "wrong combination returned by the backend (e.g. edited JSON) shows the error on the card field it belongs to"
+    - id: UI13
+      scenario: "approve needs sample input; a bad sample shows PATH_NOT_FOUND and the version stays DRAFT; a good one → ACTIVE"
+    - id: UI14
+      scenario: "reject / reactivate require remarks (button disabled until filled); inactivate optional remarks"
+    - id: UI15
+      scenario: "edit when a DRAFT exists → save disabled with 'approve or reject draft vN first'; otherwise PUT creates latest+1 DRAFT"
+    - id: UI16
+      scenario: "no actor name → mutating actions ask for it first; the name is sent as X-Ruler-Actor"
+
+  sample_data:   # §17, approved 2026-11-07 (required on create/update/validate; breaking change accepted)
+    - id: SD1
+      scenario: "create / update without sample_data → REQUIRED at $.sample_data; nothing stored"
+    - id: SD2
+      scenario: "sample_data missing a used path or with a wrong type → PATH_NOT_FOUND / PATH_TYPE_MISMATCH at the node path; nothing stored"
+    - id: SD3
+      scenario: "sample_data stored with the version and returned by get, history and the create/update response"
+    - id: SD4
+      scenario: "approve without sample_input uses the stored sample_data; approve with sample_input still checks the given one (compatible)"
+    - id: SD5
+      scenario: "update stores its own sample_data; reactivate copies the source version's sample_data and re-checks it"
+    - id: SD6
+      scenario: "validate (dry run) without sample_data → REQUIRED; bad sample → path errors; good → valid; expressions the same"
+    - id: SD7
+      scenario: "REST: create without sample_data → 400; responses carry sample_data as a JSON object; approve body may omit sample_input"
+    # round 3 (2026-11-07): enums, list params, sample input, theme, type size
+    - id: UI17
+      scenario: "list-typed dynamic param → list editor, sent as an array; empty → omitted; enum param → dropdown (single) / chips (list)"
+    - id: UI18
+      scenario: "sample input: template from static paths (enum → first allowed value); must be a JSON object; stored sample loads with the version"
+    - id: UI19
+      scenario: "enum lhs attribute (allowed_values) → rhs constant is a dropdown of those values; 'is one of' → toggle chips; a stored value outside the list is flagged"
+    - id: UI20
+      scenario: "create/update/validate send sample_data; a path missing from the sample → PATH_NOT_FOUND shown on the card that uses it"
+    - id: UI21
+      scenario: "approve defaults to the draft's stored sample (sample_input omitted); an edited sample is sent explicitly; Test pre-fills the ACTIVE version's sample"
+    - id: UI22
+      scenario: "theme switch light / dark / system, remembered, applied before first paint; sample panel fold state remembered"
+
+
+  enum_type:   # §18, approved 2026-11-07
+    - id: EN1
+      scenario: "config: enum without allowed_values, empty, duplicate or badly formed values → startup error; allowed_values on a non-enum attribute → error"
+    - id: EN2
+      scenario: "condition: enum attr equals 'MH' ok; equals 'DL' / in ['MH','DL'] → ENUM_VALUE_NOT_ALLOWED at the constant; prefix_match 'M' ok (no membership rule)"
+    - id: EN3
+      scenario: "runtime input outside the values → 422 EvaluationException; sample_data outside → PATH_TYPE_MISMATCH"
+    - id: EN4
+      scenario: "enum param: member constant ok, non-member → ENUM_VALUE_NOT_ALLOWED; enum attribute with the same values bound to it ok"
+    - id: EN5
+      scenario: "expression: an enum attribute keeps type enum; lower_case of it → string"
+    - id: EN6
+      scenario: "tree returns enum: member constant leaf ok; non-member → ENUM_VALUE_NOT_ALLOWED; enum attr with a subset of values ok; evaluation returns the value; changing the values is RETURN_TYPE_LOCKED"
+    - id: EN7
+      scenario: "types: enum widens to string; enum with a subset of values widens to the larger enum; toString/fromString round trip; catalog shows enum_values and /catalog/types lists enum"
+    - id: EN8
+      scenario: "a dynamic attribute without params validates and evaluates (executor gets an empty map)"
+    - id: EN9
+      scenario: "REST: a tree with enum returns created, approved and evaluated; catalog attributes show enum_values"
+    # round 4 (2026-11-07): value nodes = expressions; enum data type
+    - id: UI23
+      scenario: "value expressions: saved → EXPRESSION_REFERENCE{key, version}; nested calc → EXPRESSION tree; unary has no rhs; load back editable; errors stay on their own node"
+    - id: UI24
+      scenario: "value card offers only Saved / Build; Build root = Calculation | Attribute | Value; inner operands add Saved; operations follow A's type (from validate-node for a nested calc)"
+    - id: UI25
+      scenario: "enum: lhs enum attribute → rhs dropdown/chips of enum_values; operators for an enum lhs are string's; enum returns need allowed values (step 1 blocks without them)"
+
+
+  value_node_expressions:   # §19, approved 2026-11-07: value / items / entries hold expressions; entries = map[string, expression]
+    - id: VN1
+      scenario: "single, list and map value nodes accept inline expressions, references, and simple constant/attribute expressions"
+    - id: VN2
+      scenario: "entries is a JSON object {string: expression}; key order is kept in the result"
+    - id: VN3
+      scenario: "old list format entries: [{key, value}] → INVALID_SHAPE; empty key → INVALID_SHAPE; duplicate key → rejected at parse"
+    - id: VN4
+      scenario: "a map return type needs key_type string: returns with key_type integer → INVALID_TYPE"
+    - id: VN5
+      scenario: "each map value is checked against the return value type → ENTRY_VALUE_TYPE_MISMATCH at $.root.entries.<key>"
+    - id: VN6
+      scenario: "sample_data checks and evaluation walk map values; validate-node accepts a map value card"
+
+  catalog_enum_filter:   # 2026-11-07: optional allowed_values (comma-separated) on catalog type filters
+    - id: CF1
+      scenario: "attributes?data_type=enum&allowed_values=MH,KA → only the MH/KA enum attribute (string and other enums excluded)"
+    - id: CF2
+      scenario: "operators?data_type=enum&allowed_values=MH,KA → the string operators (equals, in, prefix_match, lower_case, ...)"
+    - id: CF3
+      scenario: "expressions?data_type=enum&allowed_values=MH,KA → expressions whose result is that enum (or a subset); string results excluded"
+    - id: CF4
+      scenario: "data_type=enum without allowed_values → 400 as today; allowed_values with a non-enum data_type → 400; without the param → unchanged"
+
+  expression_returns:   # §20, 2026-11-07: expressions declare `returns` like trees
+    - id: ER1
+      scenario: "create without returns → REQUIRED at $.returns; bad type → INVALID_TYPE; scale on non-big_decimal → INVALID_SCALE"
+    - id: ER2
+      scenario: "computed type must fit the declared returns: big_decimal body with returns string → RETURN_TYPE_MISMATCH at $.expression; integer body with returns double → ok (widening)"
+    - id: ER3
+      scenario: "enum returns: member string constant ok, non-member → ENUM_VALUE_NOT_ALLOWED; enum attribute with a subset of values ok"
+    - id: ER4
+      scenario: "stored result_type, list summary return_type, catalog expression filter and GET data all show the declared returns"
+    - id: ER5
+      scenario: "a reference's type is the referenced expression's declared returns (trees validate against it)"
+    - id: ER6
+      scenario: "evaluation converts a referenced expression's result to its returns type and applies its scale/rounding"
+    - id: ER7
+      scenario: "update that changes returns type → RETURN_TYPE_LOCKED; same type with a different scale → ok"
+    # round 6 (2026-11-07): expression builder, ladder, equation cards, folding; lld §19 map object, §20 expression returns
+    - id: UI26
+      scenario: "map value = JSON object {key: expression}; row error paths entries.<key>; blank or duplicate key blocks save; seeded tree round-trips"
+    - id: UI27
+      scenario: "ladder: every step's LHS is constant | attribute, RHS chains; an expression with an expression/saved LHS opens read-only with 'Rebuild step by step'; expression definition round-trips with returns"
+    - id: UI28
+      scenario: "enum param constants are sent as data_type string (server checks membership); enum slot filters send allowed_values"
+    - id: UI29
+      scenario: "expression builder: step 1 case, name, description, returns, sample; step 2 one card (Constant typed by returns with a note | Attribute filtered by returns | Saved | Expression ladder); /expressions/validate; wrong returns → RETURN_TYPE_MISMATCH on the card"
+    - id: UI30
+      scenario: "every card minimizes to its description (or its equation / formula); value rows fold to one line 'key = formula'; collapse all / expand all in the top bar"
+
+
+  stamp_duty_v2:   # §21, 2026-11-07: new example case + list quantifier operators + "$." path prefix
+    - id: V2-1
+      scenario: "numeric lists: all_/any_ greater_than / greater_than_or_equal / less_than / less_than_or_equal against one number (integer rhs widens for double lists)"
+    - id: V2-2
+      scenario: "all_equals / none_equals for string, numeric and boolean lists (PARTIES_IS_ACTIVE all_equals true)"
+    - id: V2-3
+      scenario: "empty list: all_* and any_* → false; none_equals → true"
+    - id: V2-4
+      scenario: "validation: all_greater_than on a string list or with a list rhs → OPERATOR_NOT_SUPPORTED; operators listed by /catalog/operators for list types"
+    - id: V2-5
+      scenario: "paths may start with '$.' in config and operands; '$.parties.*.party_id' and 'parties.*.party_id' are the same attribute"
+    - id: V2-6
+      scenario: "example: stamp-duty-v2 seeded next to stamp-duty; PARTIES_CITY_LIST flattens every property city; PARTIES_AGE_LIST returns property ages, [0] when there are none"
+    - id: V2-7
+      scenario: "example: evaluating the v2 tree for MSME, Delhi, old-property, new-property and minor-party inputs gives the expected duty"
+
+  run_and_explain:   # §22, 2026-11-07: evaluate trees and expressions, any version, with an optional explanation
+    - id: RX1
+      scenario: "POST /evaluate/{case}/{name} without params behaves exactly as before (ACTIVE version)"
+    - id: RX2
+      scenario: "?version=N runs that version whatever its status (DRAFT, ACTIVE, INACTIVE); unknown version → 404"
+    - id: RX3
+      scenario: "POST /expressions/{case}/{name}/evaluate runs the ACTIVE expression (or ?version=) on the body as input; result in its declared type with scale applied; no ACTIVE version → 404"
+    - id: RX4
+      scenario: "?explain=true adds steps: each condition (lhs value, operator, rhs value, passed), each calculation (operation, operands, result), each reference, the value node reached"
+    - id: RX5
+      scenario: "?explain=true lists every attribute resolved (code, path or params, value), dynamic ones once (memoized)"
+    - id: RX6
+      scenario: "without explain the response has no explanation field; result_type is included"
+    - id: RX7
+      scenario: "evaluation errors with explain still return 422 with the failing node"
+
+  expressions_in_conditions:   # §23, 2026-11-07: condition lhs/rhs may be expressions (inline or by reference)
+    - id: XC1
+      scenario: "condition with an inline EXPRESSION lhs (sum of a list attribute) GTE an attribute validates and evaluates"
+    - id: XC2
+      scenario: "condition with an EXPRESSION_REFERENCE lhs (stored expression) compared to a constant validates and evaluates"
+    - id: XC3
+      scenario: "type errors inside a condition's expression are reported at the inner node (e.g. $.root.lhs.rhs); the operator check uses the expression's result type"
+    - id: XC4
+      scenario: "explain shows the calculation steps before the condition step that uses their result"
+    - id: XC5
+      scenario: "validate-node accepts a condition card with expression operands"
+    - id: XC6
+      scenario: "example: stamp-duty-v2 expression security_cover + tree secured-loan-duty; fully secured → 0.1%, under-secured → 0.5% capped at 10000"
+
+  v2_rule_catalog:   # §24, 2026-11-07: example content for stamp-duty-v2 (expressions + trees), checked by the example smoke test
+    - id: RC1
+      scenario: "8 more v2 expressions seed and approve in dependency order (refs to refs, unary list ops, dynamic attribute inside an expression)"
+    - id: RC2
+      scenario: "base_value = 30% × ((20% × (loan + 1 Cr)) + 2 Cr): loan 25 L → 6,750,000"
+    - id: RC3
+      scenario: "big tree loan-agreement-duty (map result) covers: minor party, renewal flat fee, MSME concession with min() cap, fully secured, under-secured below cap, under-secured at the cap"
+    - id: RC4
+      scenario: "big tree property-risk-band (enum LOW/MEDIUM/HIGH) reaches every band through expression conditions"
+    - id: RC5
+      scenario: "duty-cap: if base × 0.5% ≥ 35,000 then 35,000 else base × 0.5% (inline expression in the condition), both branches"
+    - id: RC6
+      scenario: "distinct-states (list result) removes duplicate states"
+    # round 9 (2026-11-07): Calculate with explain (lld §22), expressions in conditions (§23), "$." paths (§21)
+    - id: UI31
+      scenario: "trace: steps by node path (steps inside a saved expression excluded); visited nodes; value-row results (map by key, list by index); attribute values by path/code"
+    - id: UI32
+      scenario: "'$.loan_amount' and 'loan_amount' are the same attribute (dropdown shows it, operators load)"
+    - id: UI33
+      scenario: "stamp-duty:default — sample MH → 720,000 / 30,000 / 750,000 via TRUE; KA → 600,000 / 120,000 / 720,000 via FALSE; missing market_value → 422 naming the node; expressions and stamp-duty-v2 trees run with highlights"
+    - id: UI34
+      scenario: "condition card grid: attribute → row 2 locked type of the attribute, row 3 attribute; constant (left) → row 2 container + data type chosen side by side, row 3 input; constant (right) → row 2 locked to the operator's type; expression → row 2 saved expression, row 3 its locked return type; inline calculation (saved rules) → 'calculated below' + its steps; operator aligned with row 3; right side appears only after an operator"
+
+    - id: RC7   # §24.1
+      scenario: "seed: no inline expression in any condition; commutative expressions have an ATTRIBUTE/CONSTANT lhs; all 23 smoke results unchanged"
+    - id: UI35
+      scenario: "value node layout from its own JSON: list/map return with one 'value' expression stays one slot (typed by the whole return), shows the whole result, and round-trips unchanged (no items: []); every saved definition round-trips unchanged"
+

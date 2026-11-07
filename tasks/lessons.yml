@@ -1,0 +1,10 @@
+lessons:
+  - id: fuzzy-match-user-named-files
+    mistake: >
+      Matched user-described files with an exact glob (ruler-*) and missed a file
+      whose prefix had a typo (rule-new-decision-tree-page-1.png).
+    rule: >
+      When collecting files the user describes by prefix or name, also list near
+      matches (case-insensitive, partial prefix) and look for gaps in sequences
+      (e.g. page-2 exists but page-1 is missing). Report any near matches before
+      finishing instead of silently ignoring them.

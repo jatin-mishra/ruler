@@ -1,0 +1,3 @@
+rootProject.name = 'ruler'
+
+include 'ruler-core', 'ruler-spring-boot-starter', 'ruler-example'
